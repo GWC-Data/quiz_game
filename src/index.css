@@ -1,0 +1,192 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+html {
+  font-family: var(--font-sans);
+}
+
+body {
+  background-color: #f7f7fc;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+@keyframes pop {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes flashRed {
+  0%,
+  100% {
+    background-color: #e2e4f0;
+    color: #64748b;
+  }
+  25%,
+  75% {
+    background-color: #fca5a5;
+    color: #7f1d1d;
+  }
+  50% {
+    background-color: #ef4444;
+    color: #ffffff;
+  }
+}
+
+@keyframes scoreBump {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes micPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(109, 60, 203, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 14px rgba(109, 60, 203, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(109, 60, 203, 0);
+  }
+}
+
+@keyframes celebrate {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes floatBadge {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes confettiPiece {
+  0% {
+    transform: translate(0, 0) rotate(0deg) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--tx), calc(var(--ty) + 30px)) rotate(var(--rot)) scale(0.4);
+    opacity: 0;
+  }
+}
+
+@keyframes confettiFall {
+  0% {
+    transform: translate3d(0, -10vh, 0) rotate(0deg);
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(var(--drift), 110vh, 0) rotate(var(--rotate-end));
+    opacity: 0;
+  }
+}
+
+.animate-pop {
+  animation: pop 350ms ease-out;
+}
+
+.animate-fade-slide-in {
+  animation: fadeSlideIn 300ms ease-out;
+}
+
+.animate-flash-red {
+  animation: flashRed 300ms ease-in-out 2;
+}
+
+.animate-score-bump {
+  animation: scoreBump 300ms ease-out;
+}
+
+.animate-mic-pulse {
+  animation: micPulse 1.6s ease-out infinite;
+}
+
+.animate-celebrate {
+  animation: celebrate 1.2s ease-in-out infinite;
+}
+
+.animate-rise-in {
+  animation: riseIn 500ms ease-out both;
+}
+
+.animate-float {
+  animation: floatBadge 3s ease-in-out infinite;
+}
+
+.animate-confetti-piece {
+  animation: confettiPiece 800ms ease-out forwards;
+}
+
+.animate-confetti-fall {
+  animation-name: confettiFall;
+  animation-timing-function: ease-in;
+  animation-fill-mode: forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-pop,
+  .animate-fade-slide-in,
+  .animate-flash-red,
+  .animate-score-bump,
+  .animate-mic-pulse,
+  .animate-celebrate,
+  .animate-rise-in,
+  .animate-float,
+  .animate-confetti-piece,
+  .animate-confetti-fall {
+    animation: none !important;
+  }
+}
