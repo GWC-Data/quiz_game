@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ROUNDS, QUIZ_TITLE, QUIZ_SUBTITLE } from './quizConfig';
+import { createModel } from 'vosk-browser';
+import { ROUNDS, QUIZ_TITLE } from './quizConfig';
 import { gradeAnswer } from './gradeAnswer';
 import { primeAudio, playCorrectSound, playWrongSound } from './sounds';
+
+// Small English model pre-converted to the tar.gz format vosk-browser's
+// WASM worker expects, hosted (with CORS enabled) by the vosk-browser
+// project itself. Runs fully offline in the browser after this one-time
+// download — no audio ever leaves the device, unlike the Chromium/Google
+// Web Speech API this replaces.
+const VOSK_MODEL_URL = 'https://ccoreilly.github.io/vosk-browser/models/vosk-model-small-en-us-0.15.tar.gz';
 
 const STATUS_COLORS = {
   idle: 'text-[#64748B]',
@@ -95,6 +103,19 @@ function CheckIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+function ChevronIcon({ className = '' }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      className={`h-4 w-4 shrink-0 transition-transform duration-200 ${className}`}
+      aria-hidden="true"
+    >
+      <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -297,47 +318,15 @@ function AnswerRow({ index, concept, isJustMatched, shouldFlash, flashToken, red
 
 function StartScreen({ onStart, reduceMotion }) {
   return (
-    <div className={`relative w-full max-w-xl flex flex-col gap-6 ${!reduceMotion ? 'animate-rise-in' : ''}`}>
-      <div className="flex items-center gap-1.5 pl-1">
-        <span className="h-1.5 w-1.5 rounded-full bg-[#6D3CCB]" aria-hidden="true" />
-        <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6D3CCB]">Voice Quiz</span>
-      </div>
-
-      <div className="rounded-[20px] bg-gradient-to-r from-[#6D3CCB] via-[#A78BFA] to-[#4F8EF7] p-[2px] shadow-[0_20px_50px_-20px_rgba(23,37,84,0.28)]">
-        <div className="rounded-[20px] flex flex-col items-center gap-5 bg-[rgba(255,255,255,0.72)] backdrop-blur-md px-6 py-10 text-center sm:px-10">
-          <div className={`relative flex h-20 w-20 shrink-0 items-center justify-center ${!reduceMotion ? 'animate-float' : ''}`}>
-            <div
-              className="absolute inset-0 rounded-2xl bg-gradient-to-br from-[#6D3CCB]/40 via-[#A78BFA]/30 to-[#4F8EF7]/40 blur-md"
-              aria-hidden="true"
-            />
-            <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl bg-white p-3 shadow-[0_10px_24px_-8px_rgba(109,60,203,0.5)] ring-1 ring-[#E2E4F0]">
-              <img src="/half_logo.png" alt="Quiz logo" className="h-full w-full object-contain" />
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <h1 className="text-2xl font-bold tracking-tight text-[#172554]">{QUIZ_TITLE}</h1>
-            <p className="max-w-md text-sm leading-relaxed text-[#64748B]">{QUIZ_SUBTITLE}</p>
-          </div>
-
-          <div className="flex w-full flex-wrap items-center justify-center gap-2">
-            {ROUNDS.map((round, index) => (
-              <span
-                key={round.id}
-                className="flex items-center gap-1.5 rounded-full border border-[#E2E4F0] bg-white/70 px-3 py-1 text-xs font-semibold text-[#172554]"
-              >
-                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[#F1EDFF] text-[10px] text-[#6D3CCB]">
-                  {index + 1}
-                </span>
-                {round.title}
-              </span>
-            ))}
-          </div>
+    <div className={`relative w-full max-w-md flex flex-col items-center gap-6 ${!reduceMotion ? 'animate-rise-in' : ''}`}>
+      <div className="w-full rounded-[20px] bg-gradient-to-r from-[#6D3CCB] via-[#A78BFA] to-[#4F8EF7] p-[2px] shadow-[0_20px_50px_-20px_rgba(23,37,84,0.28)]">
+        <div className="rounded-[20px] flex flex-col items-center gap-8 bg-[rgba(255,255,255,0.72)] backdrop-blur-md px-8 py-16 text-center sm:px-12">
+          <h1 className="text-3xl font-bold tracking-tight text-[#172554] sm:text-4xl">{QUIZ_TITLE}</h1>
 
           <button
             type="button"
             onClick={onStart}
-            className="mt-2 flex items-center gap-2 rounded-full bg-gradient-to-r from-[#6D3CCB] to-[#4F8EF7] px-7 py-3 text-sm font-bold text-white shadow-[0_12px_28px_-8px_rgba(109,60,203,0.6)] transition-transform duration-200 ease-out hover:scale-105 active:scale-95"
+            className="flex items-center gap-2 rounded-full bg-gradient-to-r from-[#6D3CCB] to-[#4F8EF7] px-8 py-3.5 text-sm font-bold text-white shadow-[0_12px_28px_-8px_rgba(109,60,203,0.6)] transition-transform duration-200 ease-out hover:scale-105 active:scale-95"
           >
             <PlayIcon />
             Start Quiz
@@ -348,11 +337,69 @@ function StartScreen({ onStart, reduceMotion }) {
   );
 }
 
+// Right-side accordion: one row per answer slot, in rank order. Locked
+// (unanswered) slots stay collapsed and unlabeled so they don't spoil the
+// answer; answered slots can be expanded to read the fact behind them, and
+// the most recently answered one auto-expands.
+function FactsPanel({ concepts, answeredByRank, openIndex, onToggle, reduceMotion }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {concepts.map((_, index) => {
+        const concept = answeredByRank[index];
+        const isAnswered = Boolean(concept);
+        const isOpen = isAnswered && openIndex === index;
+
+        return (
+          <div
+            key={index}
+            className={`overflow-hidden rounded-xl border transition-colors duration-300 ${
+              isAnswered ? 'border-[#DED0FA] bg-[#F1EDFF]/70' : 'border-[#E2E4F0] bg-white/50'
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => isAnswered && onToggle(index)}
+              disabled={!isAnswered}
+              className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left disabled:cursor-not-allowed"
+            >
+              <span className="flex items-center gap-2 text-sm font-semibold text-[#172554]">
+                <span
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
+                    isAnswered ? 'bg-[#6D3CCB] text-white' : 'bg-[#E2E4F0] text-[#64748B]'
+                  }`}
+                >
+                  {index + 1}
+                </span>
+                {isAnswered ? concept.label : 'Locked'}
+              </span>
+              {isAnswered ? (
+                <ChevronIcon className={isOpen ? 'rotate-180 text-[#6D3CCB]' : 'text-[#64748B]'} />
+              ) : null}
+            </button>
+            <div
+              className={`grid ${reduceMotion ? '' : 'transition-[grid-template-rows] duration-300 ease-out'}`}
+              style={{ gridTemplateRows: isOpen ? '1fr' : '0fr' }}
+            >
+              <div className="min-h-0 overflow-hidden">
+                <p className="px-4 pb-3 text-xs leading-relaxed text-[#64748B]">{concept?.description}</p>
+                {concept?.source ? (
+                  <p className="px-4 pb-4 text-[10px] font-semibold uppercase tracking-wide text-[#6D3CCB]">
+                    Source: {concept.source}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function VoiceQuiz() {
   const [hasStarted, setHasStarted] = useState(false);
   const [currentRoundIndex, setCurrentRoundIndex] = useState(0);
-  const [answeredList, setAnsweredList] = useState([]);
-  const [score, setScore] = useState(0);
+  const [answeredByRank, setAnsweredByRank] = useState(() => Array(ROUNDS[0].concepts.length).fill(null));
   const [isListening, setIsListening] = useState(false);
   const [isGrading, setIsGrading] = useState(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -361,18 +408,20 @@ export default function VoiceQuiz() {
   const [statusTone, setStatusTone] = useState('idle');
   const [lastTranscript, setLastTranscript] = useState('');
   const [speechSupported, setSpeechSupported] = useState(true);
+  const [modelReady, setModelReady] = useState(false);
   const [justMatchedRowIndex, setJustMatchedRowIndex] = useState(null);
   const [scoreBump, setScoreBump] = useState(false);
-  const [flashRowIndex, setFlashRowIndex] = useState(null);
-  const [flashToken, setFlashToken] = useState(0);
+  const [wrongFlashToken, setWrongFlashToken] = useState(0);
+  const [openFactIndex, setOpenFactIndex] = useState(null);
   const [interimText, setInterimText] = useState('');
   const [waveformLevels, setWaveformLevels] = useState(() => new Array(WAVEFORM_BAR_COUNT).fill(6));
 
-  const recognitionRef = useRef(null);
+  const voskModelRef = useRef(null);
+  const recognizerRef = useRef(null);
+  const processorRef = useRef(null);
   const handleTranscriptRef = useRef(() => {});
   const finalTranscriptRef = useRef('');
   const interimTextRef = useRef('');
-  const hadErrorRef = useRef(false);
   const audioDetectedRef = useRef(false);
   const micStreamRef = useRef(null);
   const analyserCtxRef = useRef(null);
@@ -391,12 +440,12 @@ export default function VoiceQuiz() {
   const concepts = round.concepts;
   const isLastRound = currentRoundIndex === ROUNDS.length - 1;
 
-  const answeredIds = useMemo(() => new Set(answeredList.map((c) => c.id)), [answeredList]);
+  const score = useMemo(() => answeredByRank.filter(Boolean).length, [answeredByRank]);
   const remainingConcepts = useMemo(
-    () => concepts.filter((c) => !answeredIds.has(c.id)),
-    [answeredIds, concepts]
+    () => concepts.filter((c) => !answeredByRank[c.rank - 1]),
+    [answeredByRank, concepts]
   );
-  const isRoundComplete = answeredList.length === concepts.length;
+  const isRoundComplete = score === concepts.length;
 
   const handleTranscript = useCallback(
     async (transcriptText) => {
@@ -412,10 +461,12 @@ export default function VoiceQuiz() {
           : null;
 
         if (concept) {
-          const rowIndex = answeredList.length;
-          const nextList = [...answeredList, concept];
-          setAnsweredList(nextList);
-          setScore(nextList.length);
+          const rowIndex = concept.rank - 1;
+          setAnsweredByRank((prev) => {
+            const next = [...prev];
+            next[rowIndex] = concept;
+            return next;
+          });
           setJustMatchedRowIndex(rowIndex);
           setScoreBump(true);
           setStatusTone('success');
@@ -426,8 +477,7 @@ export default function VoiceQuiz() {
         } else {
           setStatusTone('error');
           setMicStatus('No match found, try again.');
-          setFlashRowIndex(answeredList.length);
-          setFlashToken((t) => t + 1);
+          setWrongFlashToken((t) => t + 1);
           playWrongSound();
         }
       } catch (error) {
@@ -438,8 +488,15 @@ export default function VoiceQuiz() {
         setIsGrading(false);
       }
     },
-    [answeredList, remainingConcepts, concepts, prefersReducedMotion]
+    [remainingConcepts, concepts, prefersReducedMotion]
   );
+
+  // Auto-expand the fact for whichever slot was just matched.
+  useEffect(() => {
+    if (justMatchedRowIndex != null) {
+      setOpenFactIndex(justMatchedRowIndex);
+    }
+  }, [justMatchedRowIndex]);
 
   useEffect(() => {
     handleTranscriptRef.current = handleTranscript;
@@ -461,168 +518,182 @@ export default function VoiceQuiz() {
     setWaveformLevels(new Array(WAVEFORM_BAR_COUNT).fill(6));
   }, []);
 
-  // Best-effort decorative fallback for when real mic-level analysis isn't
-  // available (older browsers, permission quirks) so listening still feels alive.
-  const runSyntheticVisualizer = useCallback(() => {
-    let phase = 0;
-    const tick = () => {
-      phase += 1;
-      const next = Array.from(
-        { length: WAVEFORM_BAR_COUNT },
-        (_, i) => 18 + Math.abs(Math.sin(phase / 6 + i / 2.2)) * 70 * (0.4 + Math.random() * 0.6)
-      );
-      setWaveformLevels(next);
-      visualizerFrameRef.current = requestAnimationFrame(tick);
-    };
-    tick();
-  }, []);
-
-  // Analyzes the real microphone input in real time (Web Audio AnalyserNode)
-  // so the waveform bars reflect actual speech, not a canned animation.
-  const startVisualizer = useCallback(async () => {
-    if (prefersReducedMotion) return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      micStreamRef.current = stream;
-      const AudioContextImpl = window.AudioContext || window.webkitAudioContext;
-      const ctx = new AudioContextImpl();
-      analyserCtxRef.current = ctx;
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 128;
-      analyser.smoothingTimeConstant = 0.75;
-      source.connect(analyser);
-
-      const bufferLength = analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
-      const step = Math.max(1, Math.floor(bufferLength / WAVEFORM_BAR_COUNT));
-
-      const tick = () => {
-        analyser.getByteFrequencyData(dataArray);
-        const next = Array.from({ length: WAVEFORM_BAR_COUNT }, (_, i) => {
-          const value = dataArray[i * step] || 0;
-          return Math.max(6, (value / 255) * 100);
-        });
-        setWaveformLevels(next);
-        visualizerFrameRef.current = requestAnimationFrame(tick);
-      };
-      tick();
-    } catch (error) {
-      console.error('Mic visualizer unavailable, using a decorative animation instead:', error);
-      runSyntheticVisualizer();
-    }
-  }, [prefersReducedMotion, runSyntheticVisualizer]);
-
+  // Loads the Vosk model once on mount. This is a one-time ~40MB WASM/model
+  // download (cached by the browser afterwards); recognition itself then
+  // runs fully offline, unlike the Chromium-only Web Speech API this replaces.
   useEffect(() => {
-    const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (!SpeechRecognitionImpl) {
+    if (
+      !navigator.mediaDevices?.getUserMedia ||
+      !(window.AudioContext || window.webkitAudioContext)
+    ) {
       setSpeechSupported(false);
       setStatusTone('idle');
       setMicStatus('Voice recognition is not supported in this browser.');
       return undefined;
     }
 
-    const recognition = new SpeechRecognitionImpl();
-    // continuous + interim results so recognition keeps listening across pauses
-    // instead of cutting off after the first short phrase, and the UI can show
-    // a live caption while the user is still speaking.
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
+    let cancelled = false;
+    setMicStatus('Loading speech model…');
 
-    recognition.onresult = (event) => {
-      let interimChunk = '';
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const res = event.results[i];
-        if (res.isFinal) {
-          finalTranscriptRef.current += `${res[0].transcript} `;
-        } else {
-          interimChunk += res[0].transcript;
+    createModel(VOSK_MODEL_URL)
+      .then((model) => {
+        if (cancelled) {
+          model.terminate();
+          return;
         }
-      }
-      interimTextRef.current = interimChunk;
-      setInterimText(interimChunk);
-    };
-
-    recognition.onaudiostart = () => {
-      audioDetectedRef.current = true;
-    };
-
-    recognition.onerror = (event) => {
-      console.error('Speech recognition error:', event.error);
-      hadErrorRef.current = true;
-      setStatusTone('error');
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        setMicStatus('Microphone access was blocked — check your browser permissions.');
-      } else if (event.error === 'audio-capture') {
-        setMicStatus('No microphone was found — check your device settings.');
-      } else if (event.error === 'network') {
-        setMicStatus('Network error — speech recognition needs an internet connection.');
-      } else if (event.error === 'no-speech') {
-        setMicStatus("No speech detected — check your mic isn't muted and try again.");
-      } else {
-        setMicStatus(`Mic error: ${event.error}`);
-      }
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-      stopVisualizer();
-      const transcript = `${finalTranscriptRef.current} ${interimTextRef.current}`.trim();
-      finalTranscriptRef.current = '';
-      interimTextRef.current = '';
-      setInterimText('');
-
-      if (transcript) {
-        handleTranscriptRef.current(transcript);
-      } else if (!hadErrorRef.current) {
-        setStatusTone('idle');
-        setMicStatus(
-          audioDetectedRef.current
-            ? "Didn't catch that — tap the mic and try again."
-            : "No audio reached the mic — check it isn't muted or blocked, then try again."
-        );
-      }
-      hadErrorRef.current = false;
-      audioDetectedRef.current = false;
-    };
-
-    recognitionRef.current = recognition;
+        voskModelRef.current = model;
+        setModelReady(true);
+        setMicStatus('Tap the microphone and speak your answer…');
+      })
+      .catch((error) => {
+        console.error('Failed to load speech model:', error);
+        if (cancelled) return;
+        setSpeechSupported(false);
+        setStatusTone('error');
+        setMicStatus('Speech model failed to load — check your connection and reload.');
+      });
 
     return () => {
-      recognition.onresult = null;
-      recognition.onaudiostart = null;
-      recognition.onerror = null;
-      recognition.onend = null;
-      recognition.abort();
-      stopVisualizer();
+      cancelled = true;
+      voskModelRef.current?.terminate();
+      voskModelRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Captures the microphone once per listening session and fans it out to
+  // both the Vosk recognizer and the waveform visualizer (Web Audio
+  // AnalyserNode), so the bars reflect actual speech rather than a canned
+  // animation.
+  const startListening = useCallback(async () => {
+    if (!voskModelRef.current) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: false,
+        audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+      });
+      micStreamRef.current = stream;
+
+      const AudioContextImpl = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AudioContextImpl();
+      analyserCtxRef.current = ctx;
+      const source = ctx.createMediaStreamSource(stream);
+
+      if (!prefersReducedMotion) {
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 128;
+        analyser.smoothingTimeConstant = 0.75;
+        source.connect(analyser);
+
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        const step = Math.max(1, Math.floor(bufferLength / WAVEFORM_BAR_COUNT));
+
+        const tick = () => {
+          analyser.getByteFrequencyData(dataArray);
+          const next = Array.from({ length: WAVEFORM_BAR_COUNT }, (_, i) => {
+            const value = dataArray[i * step] || 0;
+            return Math.max(6, (value / 255) * 100);
+          });
+          setWaveformLevels(next);
+          visualizerFrameRef.current = requestAnimationFrame(tick);
+        };
+        tick();
+      }
+
+      // Sample rate must match the AudioContext's actual rate (browsers
+      // don't always honor the requested 16kHz constraint above).
+      const recognizer = new voskModelRef.current.KaldiRecognizer(ctx.sampleRate);
+      recognizer.setWords(true);
+      recognizer.on('result', (message) => {
+        const text = message.result.text?.trim();
+        if (text) {
+          finalTranscriptRef.current += `${text} `;
+          audioDetectedRef.current = true;
+        }
+      });
+      recognizer.on('partialresult', (message) => {
+        const partial = message.result.partial ?? '';
+        interimTextRef.current = partial;
+        setInterimText(partial);
+        if (partial) audioDetectedRef.current = true;
+      });
+      recognizerRef.current = recognizer;
+
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (event) => {
+        try {
+          recognizer.acceptWaveform(event.inputBuffer);
+        } catch (error) {
+          console.error('acceptWaveform failed:', error);
+        }
+      };
+      source.connect(processor);
+      // ScriptProcessorNode only fires onaudioprocess while connected through
+      // to the destination; its output buffer is left as silence since we
+      // never write to it, so this doesn't cause any audible feedback.
+      processor.connect(ctx.destination);
+      processorRef.current = processor;
+
+      setIsListening(true);
+    } catch (error) {
+      console.error('Could not start recognition:', error);
+      setStatusTone('error');
+      setMicStatus(
+        error?.name === 'NotAllowedError' || error?.name === 'SecurityError'
+          ? 'Microphone access was blocked — check your browser permissions.'
+          : 'No microphone was found — check your device settings.'
+      );
+    }
+  }, [prefersReducedMotion]);
+
+  const stopListening = useCallback(() => {
+    if (recognizerRef.current) {
+      recognizerRef.current.remove();
+      recognizerRef.current = null;
+    }
+    if (processorRef.current) {
+      processorRef.current.disconnect();
+      processorRef.current.onaudioprocess = null;
+      processorRef.current = null;
+    }
+    setIsListening(false);
+    stopVisualizer();
+
+    const transcript = `${finalTranscriptRef.current} ${interimTextRef.current}`.trim();
+    finalTranscriptRef.current = '';
+    interimTextRef.current = '';
+    setInterimText('');
+
+    if (transcript) {
+      handleTranscriptRef.current(transcript);
+    } else {
+      setStatusTone('idle');
+      setMicStatus(
+        audioDetectedRef.current
+          ? "Didn't catch that — tap the mic and try again."
+          : "No audio reached the mic — check it isn't muted or blocked, then try again."
+      );
+    }
+    audioDetectedRef.current = false;
+  }, [stopVisualizer]);
+
   const toggleMic = () => {
-    if (!speechSupported || isGrading || isTransitioning || quizEnded || !recognitionRef.current) return;
+    if (!speechSupported || !modelReady || isGrading || isTransitioning || quizEnded) return;
 
     if (isListening) {
-      recognitionRef.current.stop();
+      stopListening();
       return;
     }
 
     primeAudio();
-    startVisualizer();
     setStatusTone('listening');
     setMicStatus('Listening…');
     setLastTranscript('');
     finalTranscriptRef.current = '';
     interimTextRef.current = '';
     setInterimText('');
-    try {
-      recognitionRef.current.start();
-      setIsListening(true);
-    } catch (error) {
-      console.error('Could not start recognition:', error);
-    }
+    startListening();
   };
 
   // Advance to the next round a moment after the current one's last concept
@@ -645,10 +716,10 @@ export default function VoiceQuiz() {
     const timeout = setTimeout(
       () => {
         setCurrentRoundIndex((r) => r + 1);
-        setAnsweredList([]);
-        setScore(0);
+        setAnsweredByRank(Array(concepts.length).fill(null));
         setJustMatchedRowIndex(null);
-        setFlashRowIndex(null);
+        setOpenFactIndex(null);
+        setWrongFlashToken(0);
         setLastTranscript('');
         setStatusTone('idle');
         setMicStatus('Tap the microphone and speak your answer…');
@@ -661,10 +732,10 @@ export default function VoiceQuiz() {
   }, [isRoundComplete]);
 
   const resetRoundState = () => {
-    setAnsweredList([]);
-    setScore(0);
+    setAnsweredByRank(Array(concepts.length).fill(null));
     setJustMatchedRowIndex(null);
-    setFlashRowIndex(null);
+    setOpenFactIndex(null);
+    setWrongFlashToken(0);
     setLastTranscript('');
     setStatusTone('idle');
     setMicStatus('Tap the microphone and speak your answer…');
@@ -680,8 +751,8 @@ export default function VoiceQuiz() {
   };
 
   const stopListeningIfActive = () => {
-    if (isListening && recognitionRef.current) {
-      recognitionRef.current.stop();
+    if (isListening) {
+      stopListening();
     }
   };
 
@@ -708,7 +779,11 @@ export default function VoiceQuiz() {
   };
 
   return (
-    <div className="relative min-h-screen w-full overflow-hidden bg-[#F7F7FC] flex items-center justify-center p-6">
+    <div
+      className={`relative h-screen w-full overflow-hidden bg-[#F7F7FC] ${
+        hasStarted ? 'flex' : 'flex items-center justify-center p-6'
+      }`}
+    >
       <CelebrationConfetti trigger={quizEnded} reduceMotion={prefersReducedMotion} />
       <div
         className="pointer-events-none absolute -top-32 -left-24 h-80 w-80 rounded-full bg-[#6D3CCB]/20 blur-[100px]"
@@ -723,134 +798,157 @@ export default function VoiceQuiz() {
         <StartScreen onStart={() => setHasStarted(true)} reduceMotion={prefersReducedMotion} />
       ) : (
         <div
-          className={`relative w-full max-w-xl flex flex-col gap-5 ${
+          className={`relative z-10 flex h-full w-full flex-col gap-4 p-4 sm:p-6 lg:flex-row ${
             !prefersReducedMotion ? 'animate-rise-in' : ''
           }`}
         >
-          <div className="flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={goBack}
-              className="flex items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold text-[#64748B] transition-colors duration-200 hover:bg-[#F5F2FF] hover:text-[#6D3CCB]"
-            >
-              <BackIcon />
-              Back
-            </button>
-            <span className="flex items-center gap-1.5 pr-1">
-              <span className="h-1.5 w-1.5 rounded-full bg-[#6D3CCB]" aria-hidden="true" />
-              <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6D3CCB]">
-                Round {currentRoundIndex + 1} of {ROUNDS.length} · {round.title}
-              </span>
-            </span>
-          </div>
-
-          <div className="rounded-[20px] bg-gradient-to-r from-[#6D3CCB] via-[#A78BFA] to-[#4F8EF7] p-[2px] shadow-[0_20px_50px_-20px_rgba(23,37,84,0.28)]">
-            <div className="rounded-[20px] relative bg-[rgba(255,255,255,0.72)] backdrop-blur-md p-6 sm:p-7">
-              <div className="flex items-start justify-between gap-4 mb-6">
-                <div className="flex items-center gap-3.5">
-                  <div
-                    className={`relative flex h-14 w-14 shrink-0 items-center justify-center ${!prefersReducedMotion ? 'animate-float' : ''}`}
-                  >
-                    <div
-                      className="absolute inset-0 rounded-2xl bg-gradient-to-br from-[#6D3CCB]/40 via-[#A78BFA]/30 to-[#4F8EF7]/40 blur-md"
-                      aria-hidden="true"
-                    />
-                    <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-white p-2 shadow-[0_10px_24px_-8px_rgba(109,60,203,0.5)] ring-1 ring-[#E2E4F0]">
-                      <img src="/half_logo.png" alt="Quiz logo" className="h-full w-full object-contain" />
-                    </div>
-                  </div>
-                  <h1 className="text-lg font-bold leading-snug tracking-tight text-[#172554]">
-                    {round.question}
-                  </h1>
-                </div>
-                <span
-                  className={`flex shrink-0 items-center gap-1.5 rounded-full bg-gradient-to-r from-[#4F8EF7] to-[#A78BFA] px-4 py-1.5 text-sm font-bold text-white shadow-[0_6px_16px_-6px_rgba(79,142,247,0.6)] transition-transform duration-300 ${
-                    scoreBump && !prefersReducedMotion ? 'animate-score-bump' : ''
-                  }`}
-                >
-                  <TrophyIcon />
-                  {score} / {concepts.length}
-                </span>
-              </div>
-
-              <div className="mb-5 h-px w-full bg-gradient-to-r from-transparent via-[#E2E4F0] to-transparent" />
-
-              <div className="flex flex-col gap-3.5 pl-2">
-                {concepts.map((_, index) => (
-                  <AnswerRow
-                    key={`${round.id}-${index}`}
-                    index={index}
-                    concept={answeredList[index]}
-                    isJustMatched={justMatchedRowIndex === index}
-                    shouldFlash={flashRowIndex === index}
-                    flashToken={flashToken}
-                    reduceMotion={prefersReducedMotion}
-                  />
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {!quizEnded ? (
-            <div className="rounded-[20px] bg-gradient-to-r from-[#6D3CCB] via-[#A78BFA] to-[#4F8EF7] p-[2px] shadow-[0_14px_36px_-22px_rgba(23,37,84,0.32)]">
-              <div className="rounded-[20px] flex items-center gap-4 bg-[rgba(255,255,255,0.72)] backdrop-blur-md px-5 py-4">
-                <button
-                  type="button"
-                  onClick={toggleMic}
-                  disabled={!speechSupported || isGrading || isTransitioning}
-                  aria-pressed={isListening}
-                  aria-label={isListening ? 'Stop listening' : 'Start listening'}
-                  className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#6D3CCB] to-[#7C4FE0] text-white shadow-[0_10px_24px_-6px_rgba(109,60,203,0.55)] transition-transform duration-200 ease-out disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none ${
-                    !isListening ? 'hover:scale-105 active:scale-95' : ''
-                  } ${isListening && !prefersReducedMotion ? 'animate-mic-pulse' : ''}`}
-                >
-                  <MicIcon />
-                </button>
-                <div className="flex flex-1 flex-col gap-1">
-                  <span className={`text-sm font-semibold transition-colors duration-300 ${STATUS_COLORS[statusTone]}`}>
-                    {micStatus}
-                  </span>
-                  {isListening ? (
-                    <Waveform levels={waveformLevels} reduceMotion={prefersReducedMotion} />
-                  ) : null}
-                  {isListening && interimText ? (
-                    <span className="text-xs italic text-[#64748B]">“{interimText}…”</span>
-                  ) : lastTranscript ? (
-                    <span className="text-xs text-[#64748B]">“{lastTranscript}”</span>
-                  ) : null}
-                </div>
-                <button
-                  type="button"
-                  onClick={skipRound}
-                  disabled={isGrading || isTransitioning}
-                  className="flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold text-[#64748B] transition-colors duration-200 hover:bg-[#F5F2FF] hover:text-[#6D3CCB] disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {isLastRound ? 'End quiz' : 'Skip'}
-                  <SkipIcon />
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div
-              className={`flex items-center justify-between gap-4 rounded-2xl border border-[#DED0FA] bg-gradient-to-r from-[#F1EDFF] to-[#F5F2FF] px-5 py-4 shadow-[0_14px_36px_-22px_rgba(109,60,203,0.4)] ${
-                !prefersReducedMotion ? 'animate-celebrate' : ''
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <span className="text-2xl" aria-hidden="true">
-                  🎉
-                </span>
-                <span className="text-sm font-bold text-[#172554]">You've completed the AI Awareness Quiz!</span>
-              </div>
+          {/* Main question column — fills the full available height */}
+          <div className="flex min-h-0 flex-1 flex-col gap-4">
+            <div className="flex shrink-0 items-center justify-between gap-2">
               <button
                 type="button"
-                onClick={restartQuiz}
-                className="shrink-0 rounded-full bg-gradient-to-r from-[#6D3CCB] to-[#4F8EF7] px-4 py-1.5 text-xs font-bold text-white shadow-[0_6px_16px_-6px_rgba(109,60,203,0.5)] transition-transform duration-200 hover:scale-105 active:scale-95"
+                onClick={goBack}
+                className="flex items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold text-[#64748B] transition-colors duration-200 hover:bg-[#F5F2FF] hover:text-[#6D3CCB]"
               >
-                Play Again
+                <BackIcon />
+                Back
               </button>
+              <span className="flex items-center gap-1.5 pr-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-[#6D3CCB]" aria-hidden="true" />
+                <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6D3CCB]">
+                  Round {currentRoundIndex + 1} of {ROUNDS.length} · {round.title}
+                </span>
+              </span>
             </div>
-          )}
+
+            <div className="flex min-h-0 flex-1 rounded-[20px] bg-gradient-to-r from-[#6D3CCB] via-[#A78BFA] to-[#4F8EF7] p-[2px] shadow-[0_20px_50px_-20px_rgba(23,37,84,0.28)]">
+              <div className="flex min-h-0 flex-1 flex-col rounded-[20px] bg-[rgba(255,255,255,0.72)] backdrop-blur-md p-6 sm:p-7">
+                <div className="mb-6 flex shrink-0 items-start justify-between gap-4">
+                  <div className="flex items-center gap-3.5">
+                    <div
+                      className={`relative flex h-14 w-14 shrink-0 items-center justify-center ${!prefersReducedMotion ? 'animate-float' : ''}`}
+                    >
+                      <div
+                        className="absolute inset-0 rounded-2xl bg-gradient-to-br from-[#6D3CCB]/40 via-[#A78BFA]/30 to-[#4F8EF7]/40 blur-md"
+                        aria-hidden="true"
+                      />
+                      <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-white p-2 shadow-[0_10px_24px_-8px_rgba(109,60,203,0.5)] ring-1 ring-[#E2E4F0]">
+                        <img src="/half_logo.png" alt="Quiz logo" className="h-full w-full object-contain" />
+                      </div>
+                    </div>
+                    <h1 className="text-lg font-bold leading-snug tracking-tight text-[#172554] sm:text-xl">
+                      {round.question}
+                    </h1>
+                  </div>
+                  <span
+                    className={`flex shrink-0 items-center gap-1.5 rounded-full bg-gradient-to-r from-[#4F8EF7] to-[#A78BFA] px-4 py-1.5 text-sm font-bold text-white shadow-[0_6px_16px_-6px_rgba(79,142,247,0.6)] transition-transform duration-300 ${
+                      scoreBump && !prefersReducedMotion ? 'animate-score-bump' : ''
+                    }`}
+                  >
+                    <TrophyIcon />
+                    {score} / {concepts.length}
+                  </span>
+                </div>
+
+                <div className="mb-5 h-px w-full shrink-0 bg-gradient-to-r from-transparent via-[#E2E4F0] to-transparent" />
+
+                <div className="flex flex-1 flex-col justify-center gap-3.5 overflow-y-auto pl-2 pr-1">
+                  {concepts.map((_, index) => (
+                    <AnswerRow
+                      key={`${round.id}-${index}`}
+                      index={index}
+                      concept={answeredByRank[index]}
+                      isJustMatched={justMatchedRowIndex === index}
+                      shouldFlash={wrongFlashToken > 0 && !answeredByRank[index]}
+                      flashToken={wrongFlashToken}
+                      reduceMotion={prefersReducedMotion}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {!quizEnded ? (
+              <div className="shrink-0 rounded-[20px] bg-gradient-to-r from-[#6D3CCB] via-[#A78BFA] to-[#4F8EF7] p-[2px] shadow-[0_14px_36px_-22px_rgba(23,37,84,0.32)]">
+                <div className="rounded-[20px] flex items-center gap-4 bg-[rgba(255,255,255,0.72)] backdrop-blur-md px-5 py-4">
+                  <button
+                    type="button"
+                    onClick={toggleMic}
+                    disabled={!speechSupported || !modelReady || isGrading || isTransitioning}
+                    aria-pressed={isListening}
+                    aria-label={isListening ? 'Stop listening' : 'Start listening'}
+                    className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#6D3CCB] to-[#7C4FE0] text-white shadow-[0_10px_24px_-6px_rgba(109,60,203,0.55)] transition-transform duration-200 ease-out disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none ${
+                      !isListening ? 'hover:scale-105 active:scale-95' : ''
+                    } ${isListening && !prefersReducedMotion ? 'animate-mic-pulse' : ''}`}
+                  >
+                    <MicIcon />
+                  </button>
+                  <div className="flex flex-1 flex-col gap-1">
+                    <span className={`text-sm font-semibold transition-colors duration-300 ${STATUS_COLORS[statusTone]}`}>
+                      {micStatus}
+                    </span>
+                    {isListening ? (
+                      <Waveform levels={waveformLevels} reduceMotion={prefersReducedMotion} />
+                    ) : null}
+                    {isListening && interimText ? (
+                      <span className="text-xs italic text-[#64748B]">“{interimText}…”</span>
+                    ) : lastTranscript ? (
+                      <span className="text-xs text-[#64748B]">“{lastTranscript}”</span>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={skipRound}
+                    disabled={isGrading || isTransitioning}
+                    className="flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold text-[#64748B] transition-colors duration-200 hover:bg-[#F5F2FF] hover:text-[#6D3CCB] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {isLastRound ? 'End quiz' : 'Skip'}
+                    <SkipIcon />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div
+                className={`flex shrink-0 items-center justify-between gap-4 rounded-2xl border border-[#DED0FA] bg-gradient-to-r from-[#F1EDFF] to-[#F5F2FF] px-5 py-4 shadow-[0_14px_36px_-22px_rgba(109,60,203,0.4)] ${
+                  !prefersReducedMotion ? 'animate-celebrate' : ''
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-2xl" aria-hidden="true">
+                    🎉
+                  </span>
+                  <span className="text-sm font-bold text-[#172554]">You've completed the AI Awareness Quiz!</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={restartQuiz}
+                  className="shrink-0 rounded-full bg-gradient-to-r from-[#6D3CCB] to-[#4F8EF7] px-4 py-1.5 text-xs font-bold text-white shadow-[0_6px_16px_-6px_rgba(109,60,203,0.5)] transition-transform duration-200 hover:scale-105 active:scale-95"
+                >
+                  Play Again
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Right-side facts accordion */}
+          <div className="flex min-h-0 w-full shrink-0 flex-col lg:w-[340px] xl:w-[380px]">
+            <div className="flex min-h-0 flex-1 rounded-[20px] bg-gradient-to-r from-[#6D3CCB] via-[#A78BFA] to-[#4F8EF7] p-[2px] shadow-[0_20px_50px_-20px_rgba(23,37,84,0.28)]">
+              <div className="flex min-h-0 flex-1 flex-col rounded-[20px] bg-[rgba(255,255,255,0.72)] backdrop-blur-md">
+                <div className="shrink-0 border-b border-[#E2E4F0]/70 px-5 py-4">
+                  <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6D3CCB]">Fun Facts</span>
+                </div>
+                <div className="flex-1 overflow-y-auto p-3">
+                  <FactsPanel
+                    concepts={concepts}
+                    answeredByRank={answeredByRank}
+                    openIndex={openFactIndex}
+                    onToggle={(index) => setOpenFactIndex((cur) => (cur === index ? null : index))}
+                    reduceMotion={prefersReducedMotion}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
