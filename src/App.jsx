@@ -1,15 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createModel } from 'vosk-browser';
 import { ROUNDS, QUIZ_TITLE } from './quizConfig';
 import { gradeAnswer } from './gradeAnswer';
 import { primeAudio, playCorrectSound, playWrongSound } from './sounds';
-
-// Small English model pre-converted to the tar.gz format vosk-browser's
-// WASM worker expects, hosted (with CORS enabled) by the vosk-browser
-// project itself. Runs fully offline in the browser after this one-time
-// download — no audio ever leaves the device, unlike the Chromium/Google
-// Web Speech API this replaces.
-const VOSK_MODEL_URL = 'https://ccoreilly.github.io/vosk-browser/models/vosk-model-small-en-us-0.15.tar.gz';
 
 const STATUS_COLORS = {
   idle: 'text-[#64748B]',
@@ -408,7 +400,6 @@ export default function VoiceQuiz() {
   const [statusTone, setStatusTone] = useState('idle');
   const [lastTranscript, setLastTranscript] = useState('');
   const [speechSupported, setSpeechSupported] = useState(true);
-  const [modelReady, setModelReady] = useState(false);
   const [justMatchedRowIndex, setJustMatchedRowIndex] = useState(null);
   const [scoreBump, setScoreBump] = useState(false);
   const [wrongFlashToken, setWrongFlashToken] = useState(0);
@@ -416,12 +407,11 @@ export default function VoiceQuiz() {
   const [interimText, setInterimText] = useState('');
   const [waveformLevels, setWaveformLevels] = useState(() => new Array(WAVEFORM_BAR_COUNT).fill(6));
 
-  const voskModelRef = useRef(null);
-  const recognizerRef = useRef(null);
-  const processorRef = useRef(null);
+  const recognitionRef = useRef(null);
   const handleTranscriptRef = useRef(() => {});
   const finalTranscriptRef = useRef('');
   const interimTextRef = useRef('');
+  const hadErrorRef = useRef(false);
   const audioDetectedRef = useRef(false);
   const micStreamRef = useRef(null);
   const analyserCtxRef = useRef(null);
@@ -518,182 +508,171 @@ export default function VoiceQuiz() {
     setWaveformLevels(new Array(WAVEFORM_BAR_COUNT).fill(6));
   }, []);
 
-  // Loads the Vosk model once on mount. This is a one-time ~40MB WASM/model
-  // download (cached by the browser afterwards); recognition itself then
-  // runs fully offline, unlike the Chromium-only Web Speech API this replaces.
-  useEffect(() => {
-    if (
-      !navigator.mediaDevices?.getUserMedia ||
-      !(window.AudioContext || window.webkitAudioContext)
-    ) {
-      setSpeechSupported(false);
-      setStatusTone('idle');
-      setMicStatus('Voice recognition is not supported in this browser.');
-      return undefined;
-    }
-
-    let cancelled = false;
-    setMicStatus('Loading speech model…');
-
-    createModel(VOSK_MODEL_URL)
-      .then((model) => {
-        if (cancelled) {
-          model.terminate();
-          return;
-        }
-        voskModelRef.current = model;
-        setModelReady(true);
-        setMicStatus('Tap the microphone and speak your answer…');
-      })
-      .catch((error) => {
-        console.error('Failed to load speech model:', error);
-        if (cancelled) return;
-        setSpeechSupported(false);
-        setStatusTone('error');
-        setMicStatus('Speech model failed to load — check your connection and reload.');
-      });
-
-    return () => {
-      cancelled = true;
-      voskModelRef.current?.terminate();
-      voskModelRef.current = null;
+  // Best-effort decorative fallback for when real mic-level analysis isn't
+  // available (older browsers, permission quirks) so listening still feels alive.
+  const runSyntheticVisualizer = useCallback(() => {
+    let phase = 0;
+    const tick = () => {
+      phase += 1;
+      const next = Array.from(
+        { length: WAVEFORM_BAR_COUNT },
+        (_, i) => 18 + Math.abs(Math.sin(phase / 6 + i / 2.2)) * 70 * (0.4 + Math.random() * 0.6)
+      );
+      setWaveformLevels(next);
+      visualizerFrameRef.current = requestAnimationFrame(tick);
     };
+    tick();
   }, []);
 
-  // Captures the microphone once per listening session and fans it out to
-  // both the Vosk recognizer and the waveform visualizer (Web Audio
-  // AnalyserNode), so the bars reflect actual speech rather than a canned
-  // animation.
-  const startListening = useCallback(async () => {
-    if (!voskModelRef.current) return;
-
+  // Analyzes the real microphone input in real time (Web Audio AnalyserNode)
+  // so the waveform bars reflect actual speech, not a canned animation.
+  const startVisualizer = useCallback(async () => {
+    if (prefersReducedMotion) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: false,
-        audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
-      });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = stream;
-
       const AudioContextImpl = window.AudioContext || window.webkitAudioContext;
       const ctx = new AudioContextImpl();
       analyserCtxRef.current = ctx;
       const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 128;
+      analyser.smoothingTimeConstant = 0.75;
+      source.connect(analyser);
 
-      if (!prefersReducedMotion) {
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 128;
-        analyser.smoothingTimeConstant = 0.75;
-        source.connect(analyser);
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+      const step = Math.max(1, Math.floor(bufferLength / WAVEFORM_BAR_COUNT));
 
-        const bufferLength = analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-        const step = Math.max(1, Math.floor(bufferLength / WAVEFORM_BAR_COUNT));
-
-        const tick = () => {
-          analyser.getByteFrequencyData(dataArray);
-          const next = Array.from({ length: WAVEFORM_BAR_COUNT }, (_, i) => {
-            const value = dataArray[i * step] || 0;
-            return Math.max(6, (value / 255) * 100);
-          });
-          setWaveformLevels(next);
-          visualizerFrameRef.current = requestAnimationFrame(tick);
-        };
-        tick();
-      }
-
-      // Sample rate must match the AudioContext's actual rate (browsers
-      // don't always honor the requested 16kHz constraint above).
-      const recognizer = new voskModelRef.current.KaldiRecognizer(ctx.sampleRate);
-      recognizer.setWords(true);
-      recognizer.on('result', (message) => {
-        const text = message.result.text?.trim();
-        if (text) {
-          finalTranscriptRef.current += `${text} `;
-          audioDetectedRef.current = true;
-        }
-      });
-      recognizer.on('partialresult', (message) => {
-        const partial = message.result.partial ?? '';
-        interimTextRef.current = partial;
-        setInterimText(partial);
-        if (partial) audioDetectedRef.current = true;
-      });
-      recognizerRef.current = recognizer;
-
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      processor.onaudioprocess = (event) => {
-        try {
-          recognizer.acceptWaveform(event.inputBuffer);
-        } catch (error) {
-          console.error('acceptWaveform failed:', error);
-        }
+      const tick = () => {
+        analyser.getByteFrequencyData(dataArray);
+        const next = Array.from({ length: WAVEFORM_BAR_COUNT }, (_, i) => {
+          const value = dataArray[i * step] || 0;
+          return Math.max(6, (value / 255) * 100);
+        });
+        setWaveformLevels(next);
+        visualizerFrameRef.current = requestAnimationFrame(tick);
       };
-      source.connect(processor);
-      // ScriptProcessorNode only fires onaudioprocess while connected through
-      // to the destination; its output buffer is left as silence since we
-      // never write to it, so this doesn't cause any audible feedback.
-      processor.connect(ctx.destination);
-      processorRef.current = processor;
-
-      setIsListening(true);
+      tick();
     } catch (error) {
-      console.error('Could not start recognition:', error);
-      setStatusTone('error');
-      setMicStatus(
-        error?.name === 'NotAllowedError' || error?.name === 'SecurityError'
-          ? 'Microphone access was blocked — check your browser permissions.'
-          : 'No microphone was found — check your device settings.'
-      );
+      console.error('Mic visualizer unavailable, using a decorative animation instead:', error);
+      runSyntheticVisualizer();
     }
-  }, [prefersReducedMotion]);
+  }, [prefersReducedMotion, runSyntheticVisualizer]);
 
-  const stopListening = useCallback(() => {
-    if (recognizerRef.current) {
-      recognizerRef.current.remove();
-      recognizerRef.current = null;
-    }
-    if (processorRef.current) {
-      processorRef.current.disconnect();
-      processorRef.current.onaudioprocess = null;
-      processorRef.current = null;
-    }
-    setIsListening(false);
-    stopVisualizer();
+  // Uses the browser's built-in speech recognition (Chromium/Chrome, Edge)
+  // rather than a bundled model — simplest and most reliable option where
+  // it's supported.
+  useEffect(() => {
+    const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-    const transcript = `${finalTranscriptRef.current} ${interimTextRef.current}`.trim();
-    finalTranscriptRef.current = '';
-    interimTextRef.current = '';
-    setInterimText('');
-
-    if (transcript) {
-      handleTranscriptRef.current(transcript);
-    } else {
+    if (!SpeechRecognitionImpl) {
+      setSpeechSupported(false);
       setStatusTone('idle');
-      setMicStatus(
-        audioDetectedRef.current
-          ? "Didn't catch that — tap the mic and try again."
-          : "No audio reached the mic — check it isn't muted or blocked, then try again."
-      );
+      setMicStatus('Voice recognition is not supported in this browser. Please use Chrome or Edge.');
+      return undefined;
     }
-    audioDetectedRef.current = false;
-  }, [stopVisualizer]);
+
+    const recognition = new SpeechRecognitionImpl();
+    // continuous + interim results so recognition keeps listening across pauses
+    // instead of cutting off after the first short phrase, and the UI can show
+    // a live caption while the user is still speaking.
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (event) => {
+      let interimChunk = '';
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const res = event.results[i];
+        if (res.isFinal) {
+          finalTranscriptRef.current += `${res[0].transcript} `;
+        } else {
+          interimChunk += res[0].transcript;
+        }
+      }
+      interimTextRef.current = interimChunk;
+      setInterimText(interimChunk);
+    };
+
+    recognition.onaudiostart = () => {
+      audioDetectedRef.current = true;
+    };
+
+    recognition.onerror = (event) => {
+      console.error('Speech recognition error:', event.error);
+      hadErrorRef.current = true;
+      setStatusTone('error');
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        setMicStatus('Microphone access was blocked — check your browser permissions.');
+      } else if (event.error === 'audio-capture') {
+        setMicStatus('No microphone was found — check your device settings.');
+      } else if (event.error === 'network') {
+        setMicStatus('Network error — speech recognition needs an internet connection.');
+      } else if (event.error === 'no-speech') {
+        setMicStatus("No speech detected — check your mic isn't muted and try again.");
+      } else {
+        setMicStatus(`Mic error: ${event.error}`);
+      }
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      stopVisualizer();
+      const transcript = `${finalTranscriptRef.current} ${interimTextRef.current}`.trim();
+      finalTranscriptRef.current = '';
+      interimTextRef.current = '';
+      setInterimText('');
+
+      if (transcript) {
+        handleTranscriptRef.current(transcript);
+      } else if (!hadErrorRef.current) {
+        setStatusTone('idle');
+        setMicStatus(
+          audioDetectedRef.current
+            ? "Didn't catch that — tap the mic and try again."
+            : "No audio reached the mic — check it isn't muted or blocked, then try again."
+        );
+      }
+      hadErrorRef.current = false;
+      audioDetectedRef.current = false;
+    };
+
+    recognitionRef.current = recognition;
+
+    return () => {
+      recognition.onresult = null;
+      recognition.onaudiostart = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      recognition.abort();
+      stopVisualizer();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const toggleMic = () => {
-    if (!speechSupported || !modelReady || isGrading || isTransitioning || quizEnded) return;
+    if (!speechSupported || isGrading || isTransitioning || quizEnded || !recognitionRef.current) return;
 
     if (isListening) {
-      stopListening();
+      recognitionRef.current.stop();
       return;
     }
 
     primeAudio();
+    startVisualizer();
     setStatusTone('listening');
     setMicStatus('Listening…');
     setLastTranscript('');
     finalTranscriptRef.current = '';
     interimTextRef.current = '';
     setInterimText('');
-    startListening();
+    try {
+      recognitionRef.current.start();
+      setIsListening(true);
+    } catch (error) {
+      console.error('Could not start recognition:', error);
+    }
   };
 
   // Advance to the next round a moment after the current one's last concept
@@ -751,8 +730,8 @@ export default function VoiceQuiz() {
   };
 
   const stopListeningIfActive = () => {
-    if (isListening) {
-      stopListening();
+    if (isListening && recognitionRef.current) {
+      recognitionRef.current.stop();
     }
   };
 
@@ -874,7 +853,7 @@ export default function VoiceQuiz() {
                   <button
                     type="button"
                     onClick={toggleMic}
-                    disabled={!speechSupported || !modelReady || isGrading || isTransitioning}
+                    disabled={!speechSupported || isGrading || isTransitioning}
                     aria-pressed={isListening}
                     aria-label={isListening ? 'Stop listening' : 'Start listening'}
                     className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#6D3CCB] to-[#7C4FE0] text-white shadow-[0_10px_24px_-6px_rgba(109,60,203,0.55)] transition-transform duration-200 ease-out disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none ${
