@@ -11,9 +11,9 @@ const STATUS_COLORS = {
   error: 'text-red-500',
 };
 
-function MicIcon() {
+function MicIcon({ className = 'h-6 w-6' }) {
   return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-6 w-6" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
       <path
         d="M12 15a3 3 0 003-3V6a3 3 0 10-6 0v6a3 3 0 003 3z"
         stroke="currentColor"
@@ -266,7 +266,7 @@ function AnswerRow({ index, concept, isJustMatched, shouldFlash, flashToken, red
   const isAnswered = Boolean(concept);
 
   const badgeClasses = [
-    'absolute -left-4 top-1/2 z-10 flex h-9 w-9 -translate-y-1/2 shrink-0 items-center justify-center rounded-full bg-white text-sm font-bold shadow-md ring-2 transition-all duration-300',
+    'absolute -left-3.5 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 shrink-0 items-center justify-center rounded-full bg-white text-xs font-bold shadow-md ring-2 transition-all duration-300',
     isAnswered ? 'text-[#6D3CCB] ring-[#6D3CCB]' : 'text-[#64748B] ring-[#E2E4F0]',
     isJustMatched && !reduceMotion ? 'animate-pop' : '',
     isFlashing && !reduceMotion ? 'animate-flash-red' : '',
@@ -279,12 +279,12 @@ function AnswerRow({ index, concept, isJustMatched, shouldFlash, flashToken, red
     : 'bg-[#E2E4F0] hover:bg-gradient-to-r hover:from-[#A78BFA] hover:to-[#4F8EF7]';
 
   return (
-    <div className="relative">
+    <div className="relative flex-1">
       <ConfettiBurst trigger={isJustMatched} reduceMotion={reduceMotion} />
       <span className={badgeClasses}>{index + 1}</span>
-      <div className={`rounded-2xl p-[1.5px] transition-all duration-300 ${borderWrapperClasses}`}>
+      <div className={`h-full rounded-2xl p-[1.5px] transition-all duration-300 ${borderWrapperClasses}`}>
         <div
-          className={`rounded-2xl flex items-center gap-3 py-3.5 pl-9 pr-4 transition-all duration-300 ${
+          className={`flex h-full items-center gap-3 rounded-2xl pl-7 pr-3 transition-all duration-300 ${
             isAnswered ? 'bg-[#F1EDFF]' : 'bg-white/70 hover:bg-[#F5F2FF]'
           }`}
         >
@@ -580,13 +580,23 @@ export default function VoiceQuiz() {
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
+    // Ask for multiple hypotheses per phrase, not just the top guess — short
+    // answers like product/brand names are exactly where speech recognition
+    // is least confident, and the grader (keyword + LLM matching) has a much
+    // better shot when it sees several candidate phrasings instead of one.
+    recognition.maxAlternatives = 5;
 
     recognition.onresult = (event) => {
       let interimChunk = '';
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const res = event.results[i];
         if (res.isFinal) {
-          finalTranscriptRef.current += `${res[0].transcript} `;
+          const alternatives = new Set();
+          for (let a = 0; a < res.length; a += 1) {
+            const alt = res[a]?.transcript?.trim();
+            if (alt) alternatives.add(alt);
+          }
+          finalTranscriptRef.current += `${[...alternatives].join(' / ')} `;
         } else {
           interimChunk += res[0].transcript;
         }
@@ -777,12 +787,12 @@ export default function VoiceQuiz() {
         <StartScreen onStart={() => setHasStarted(true)} reduceMotion={prefersReducedMotion} />
       ) : (
         <div
-          className={`relative z-10 flex h-full w-full flex-col gap-4 p-4 sm:p-6 lg:flex-row ${
+          className={`relative z-10 flex h-full min-h-0 w-full flex-col gap-3 p-3 sm:p-4 lg:flex-row ${
             !prefersReducedMotion ? 'animate-rise-in' : ''
           }`}
         >
           {/* Main question column — fills the full available height */}
-          <div className="flex min-h-0 flex-1 flex-col gap-4">
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
             <div className="flex shrink-0 items-center justify-between gap-2">
               <button
                 type="button"
@@ -801,26 +811,26 @@ export default function VoiceQuiz() {
             </div>
 
             <div className="flex min-h-0 flex-1 rounded-[20px] bg-gradient-to-r from-[#6D3CCB] via-[#A78BFA] to-[#4F8EF7] p-[2px] shadow-[0_20px_50px_-20px_rgba(23,37,84,0.28)]">
-              <div className="flex min-h-0 flex-1 flex-col rounded-[20px] bg-[rgba(255,255,255,0.72)] backdrop-blur-md p-6 sm:p-7">
-                <div className="mb-6 flex shrink-0 items-start justify-between gap-4">
-                  <div className="flex items-center gap-3.5">
+              <div className="flex min-h-0 flex-1 flex-col rounded-[20px] bg-[rgba(255,255,255,0.72)] backdrop-blur-md p-4 sm:p-5">
+                <div className="mb-3 flex shrink-0 items-start justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
                     <div
-                      className={`relative flex h-14 w-14 shrink-0 items-center justify-center ${!prefersReducedMotion ? 'animate-float' : ''}`}
+                      className={`relative flex h-10 w-10 shrink-0 items-center justify-center ${!prefersReducedMotion ? 'animate-float' : ''}`}
                     >
                       <div
                         className="absolute inset-0 rounded-2xl bg-gradient-to-br from-[#6D3CCB]/40 via-[#A78BFA]/30 to-[#4F8EF7]/40 blur-md"
                         aria-hidden="true"
                       />
-                      <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-white p-2 shadow-[0_10px_24px_-8px_rgba(109,60,203,0.5)] ring-1 ring-[#E2E4F0]">
+                      <div className="relative flex h-10 w-10 items-center justify-center rounded-2xl bg-white p-1.5 shadow-[0_10px_24px_-8px_rgba(109,60,203,0.5)] ring-1 ring-[#E2E4F0]">
                         <img src="/half_logo.png" alt="Quiz logo" className="h-full w-full object-contain" />
                       </div>
                     </div>
-                    <h1 className="text-lg font-bold leading-snug tracking-tight text-[#172554] sm:text-xl">
+                    <h1 className="text-base font-bold leading-snug tracking-tight text-[#172554] sm:text-lg">
                       {round.question}
                     </h1>
                   </div>
                   <span
-                    className={`flex shrink-0 items-center gap-1.5 rounded-full bg-gradient-to-r from-[#4F8EF7] to-[#A78BFA] px-4 py-1.5 text-sm font-bold text-white shadow-[0_6px_16px_-6px_rgba(79,142,247,0.6)] transition-transform duration-300 ${
+                    className={`flex shrink-0 items-center gap-1.5 rounded-full bg-gradient-to-r from-[#4F8EF7] to-[#A78BFA] px-3 py-1 text-xs font-bold text-white shadow-[0_6px_16px_-6px_rgba(79,142,247,0.6)] transition-transform duration-300 ${
                       scoreBump && !prefersReducedMotion ? 'animate-score-bump' : ''
                     }`}
                   >
@@ -829,9 +839,9 @@ export default function VoiceQuiz() {
                   </span>
                 </div>
 
-                <div className="mb-5 h-px w-full shrink-0 bg-gradient-to-r from-transparent via-[#E2E4F0] to-transparent" />
+                <div className="mb-3 h-px w-full shrink-0 bg-gradient-to-r from-transparent via-[#E2E4F0] to-transparent" />
 
-                <div className="flex flex-1 flex-col justify-center gap-3.5 overflow-y-auto pl-2 pr-1">
+                <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto pl-2 pr-1">
                   {concepts.map((_, index) => (
                     <AnswerRow
                       key={`${round.id}-${index}`}
@@ -849,20 +859,35 @@ export default function VoiceQuiz() {
 
             {!quizEnded ? (
               <div className="shrink-0 rounded-[20px] bg-gradient-to-r from-[#6D3CCB] via-[#A78BFA] to-[#4F8EF7] p-[2px] shadow-[0_14px_36px_-22px_rgba(23,37,84,0.32)]">
-                <div className="rounded-[20px] flex items-center gap-4 bg-[rgba(255,255,255,0.72)] backdrop-blur-md px-5 py-4">
-                  <button
-                    type="button"
-                    onClick={toggleMic}
-                    disabled={!speechSupported || isGrading || isTransitioning}
-                    aria-pressed={isListening}
-                    aria-label={isListening ? 'Stop listening' : 'Start listening'}
-                    className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#6D3CCB] to-[#7C4FE0] text-white shadow-[0_10px_24px_-6px_rgba(109,60,203,0.55)] transition-transform duration-200 ease-out disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none ${
-                      !isListening ? 'hover:scale-105 active:scale-95' : ''
-                    } ${isListening && !prefersReducedMotion ? 'animate-mic-pulse' : ''}`}
-                  >
-                    <MicIcon />
-                  </button>
-                  <div className="flex flex-1 flex-col gap-1">
+                <div className="rounded-[20px] flex flex-col items-center gap-2 bg-[rgba(255,255,255,0.72)] backdrop-blur-md px-5 py-3">
+                  <div className="grid w-full grid-cols-[1fr_auto_1fr] items-center">
+                    <div aria-hidden="true" />
+                    <button
+                      type="button"
+                      onClick={toggleMic}
+                      disabled={!speechSupported || isGrading || isTransitioning}
+                      aria-pressed={isListening}
+                      aria-label={isListening ? 'Stop listening' : 'Start listening'}
+                      className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#6D3CCB] to-[#7C4FE0] text-white shadow-[0_14px_32px_-8px_rgba(109,60,203,0.6)] transition-transform duration-200 ease-out disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none ${
+                        !isListening ? 'hover:scale-105 active:scale-95' : ''
+                      } ${isListening && !prefersReducedMotion ? 'animate-mic-pulse' : ''}`}
+                    >
+                      <MicIcon className="h-6 w-6" />
+                    </button>
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={skipRound}
+                        disabled={isGrading || isTransitioning}
+                        className="flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold text-[#64748B] transition-colors duration-200 hover:bg-[#F5F2FF] hover:text-[#6D3CCB] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {isLastRound ? 'End quiz' : 'Skip'}
+                        <SkipIcon />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col items-center gap-1.5 text-center">
                     <span className={`text-sm font-semibold transition-colors duration-300 ${STATUS_COLORS[statusTone]}`}>
                       {micStatus}
                     </span>
@@ -875,15 +900,6 @@ export default function VoiceQuiz() {
                       <span className="text-xs text-[#64748B]">“{lastTranscript}”</span>
                     ) : null}
                   </div>
-                  <button
-                    type="button"
-                    onClick={skipRound}
-                    disabled={isGrading || isTransitioning}
-                    className="flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold text-[#64748B] transition-colors duration-200 hover:bg-[#F5F2FF] hover:text-[#6D3CCB] disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {isLastRound ? 'End quiz' : 'Skip'}
-                    <SkipIcon />
-                  </button>
                 </div>
               </div>
             ) : (
@@ -916,7 +932,7 @@ export default function VoiceQuiz() {
                 <div className="shrink-0 border-b border-[#E2E4F0]/70 px-5 py-4">
                   <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[#6D3CCB]">Fun Facts</span>
                 </div>
-                <div className="flex-1 overflow-y-auto p-3">
+                <div className="min-h-0 flex-1 overflow-y-auto p-3">
                   <FactsPanel
                     concepts={concepts}
                     answeredByRank={answeredByRank}
