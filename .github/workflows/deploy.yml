@@ -12,7 +12,7 @@ env:
   ECS_SERVICE: quizapp
   TASK_FAMILY: quizapp-task
   CONTAINER_NAME: quizapp
-  CONTAINER_PORT: 80          # <-- corrected: nginx listens on 80
+  CONTAINER_PORT: 80          # nginx listens on 80
 
 jobs:
   build-and-deploy:
@@ -95,7 +95,7 @@ jobs:
               --task-definition $TASK_DEF_ARN \
               --desired-count 1 \
               --launch-type FARGATE \
-              --network-configuration "awsvpcConfiguration={subnets=[subnet-xxxxxxx],securityGroups=[sg-xxxxxxx],assignPublicIp=ENABLED}"
+              --network-configuration "awsvpcConfiguration={subnets=[subnet-0f3074ba6c806df15,subnet-0cdf2d596f14febb8,subnet-04c8afcd7a914b931],securityGroups=[sg-087011b7ad4d758ac],assignPublicIp=ENABLED}"
           else
             echo "Service exists. Updating..."
             aws ecs update-service \
