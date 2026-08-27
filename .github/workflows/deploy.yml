@@ -8,11 +8,14 @@ on:
 env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: quizapp
-  ECS_CLUSTER: quiz_app_cluster       # <-- replace with your actual cluster name
-  ECS_SERVICE: quizapp           # <-- replace with your actual service name
+  ECS_CLUSTER: quiz_app_cluster
+  ECS_SERVICE: quizapp
+  TASK_FAMILY: quizapp-task
+  CONTAINER_NAME: quizapp
+  CONTAINER_PORT: 80          # <-- corrected: nginx listens on 80
 
 jobs:
-  build-and-push:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -31,23 +34,73 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build Docker image
-        run: |
-          docker build -t $ECR_REPOSITORY .
+        run: docker build -t $ECR_REPOSITORY .
 
       - name: Tag Docker image
         run: |
           docker tag $ECR_REPOSITORY:latest \
             ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:latest
+          docker tag $ECR_REPOSITORY:latest \
+            ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
 
       - name: Push Docker image to ECR
         run: |
-          docker push \
-            ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:latest
+          docker push ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:latest
+          docker push ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}
 
-      - name: Force new deployment on ECS
+      - name: Register new ECS task definition
+        id: register-task-def
         run: |
-          aws ecs update-service \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --service ${{ env.ECS_SERVICE }} \
-            --force-new-deployment \
-            --region ${{ env.AWS_REGION }}
+          TASK_DEFINITION_ARN=$(aws ecs register-task-definition \
+            --family $TASK_FAMILY \
+            --network-mode awsvpc \
+            --requires-compatibilities FARGATE \
+            --cpu "256" \
+            --memory "512" \
+            --execution-role-arn arn:aws:iam::070351677066:role/ecsTaskExecutionRole \
+            --container-definitions "[
+              {
+                \"name\": \"$CONTAINER_NAME\",
+                \"image\": \"${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}\",
+                \"portMappings\": [{\"containerPort\": $CONTAINER_PORT, \"protocol\": \"tcp\"}],
+                \"essential\": true,
+                \"logConfiguration\": {
+                  \"logDriver\": \"awslogs\",
+                  \"options\": {
+                    \"awslogs-group\": \"/ecs/$TASK_FAMILY\",
+                    \"awslogs-region\": \"$AWS_REGION\",
+                    \"awslogs-create-group\": \"true\",
+                    \"awslogs-stream-prefix\": \"ecs\"
+                  }
+                }
+              }
+            ]" \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "TASK_DEF_ARN=$TASK_DEFINITION_ARN" >> $GITHUB_ENV
+
+      - name: Deploy service (create if missing, else update)
+        run: |
+          SERVICE_EXISTS=$(aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --query 'services[?status==`ACTIVE`]' \
+            --output text)
+
+          if [ -z "$SERVICE_EXISTS" ]; then
+            echo "Service does not exist. Creating..."
+            aws ecs create-service \
+              --cluster $ECS_CLUSTER \
+              --service-name $ECS_SERVICE \
+              --task-definition $TASK_DEF_ARN \
+              --desired-count 1 \
+              --launch-type FARGATE \
+              --network-configuration "awsvpcConfiguration={subnets=[subnet-xxxxxxx],securityGroups=[sg-xxxxxxx],assignPublicIp=ENABLED}"
+          else
+            echo "Service exists. Updating..."
+            aws ecs update-service \
+              --cluster $ECS_CLUSTER \
+              --service $ECS_SERVICE \
+              --task-definition $TASK_DEF_ARN \
+              --force-new-deployment
+          fi
