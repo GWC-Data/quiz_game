@@ -8,7 +8,7 @@ on:
 env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: quizapp
-  ECS_CLUSTER: my-cluster        # <-- replace with your actual cluster name
+  ECS_CLUSTER: quiz_app_cluster       # <-- replace with your actual cluster name
   ECS_SERVICE: quizapp           # <-- replace with your actual service name
 
 jobs:
